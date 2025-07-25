@@ -22,7 +22,7 @@ module "vpc" {
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "20.8.4"
+  version = "19.21.0"  # ✅ downgrade to stable version
 
   cluster_name    = "webapp-cluster"
   cluster_version = "1.29"
