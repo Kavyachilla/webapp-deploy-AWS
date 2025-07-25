@@ -1,0 +1,72 @@
+name: Deploy to AWS EKS
+
+on:
+  push:
+    branches:
+      - main  # or your branch name
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Terraform Init and Apply
+      working-directory: terraform
+      run: |
+        terraform init
+        terraform apply -auto-approve
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and Push Docker Image to ECR
+      run: |
+        docker build -t webapp:latest ./docker
+        docker tag webapp:latest ${{ steps.login-ecr.outputs.registry }}/webapp:latest
+        docker push ${{ steps.login-ecr.outputs.registry }}/webapp:latest
+
+    - name: Install kubectl and connect to EKS
+      run: |
+        curl -o kubectl https://amazon-eks.s3.us-west-2.amazonaws.com/1.29.0/2024-04-10/bin/linux/amd64/kubectl
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+        aws eks update-kubeconfig --region $AWS_REGION --name webapp-cluster
+
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/service.yaml
+    - name: Wait for LoadBalancer IP and print URL
+      run: |
+        echo "⏳ Waiting for LoadBalancer IP..."
+        for i in {1..30}; do
+          EXTERNAL_IP=$(kubectl get svc webapp-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          if [ -n "$EXTERNAL_IP" ]; then
+            echo "✅ Service is available at: http://$EXTERNAL_IP"
+            break
+          fi
+          echo "Not ready yet... waiting 10 seconds"
+          sleep 10
+        done
+
+        if [ -z "$EXTERNAL_IP" ]; then
+          echo "❌ Failed to get LoadBalancer IP. Please check the service or retry later."
+          exit 1
+        fi
